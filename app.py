@@ -212,9 +212,9 @@ def compose_image(generated_image_base64: str, text_before: str, text: str, text
     
     # Load fonts
     try:
-        font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 25)
+        font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 20)
     except IOError:
-        font = ImageFont.load_default()
+        font = ImageFont.load_default(size=20)
     
     def wrap_text(text: str, max_width: int, font: ImageFont.FreeTypeFont) -> list[str]:
         """Helper function to wrap text to fit within max_width."""
@@ -428,7 +428,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    st.title("Painter 🎨")
+    st.title("Website Painter 🎨")
 
     # Add controls to sidebar
     with st.sidebar:
