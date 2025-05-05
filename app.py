@@ -201,7 +201,7 @@ def compose_image(generated_image_base64: str, text_before: str, text: str, text
     
     # Create a new image with white background
     width = gen_image.width
-    height = gen_image.height + 120  # Extra space for description
+    height = gen_image.height + 220  # Extra space for description
     composed_image = Image.new('RGB', (width, height), 'white')
     
     # Paste the generated image at the top
@@ -212,7 +212,7 @@ def compose_image(generated_image_base64: str, text_before: str, text: str, text
     
     # Load fonts
     try:
-        font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 17)
+        font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 25)
     except IOError:
         font = ImageFont.load_default()
     
@@ -408,6 +408,26 @@ if "doc" not in st.session_state:
 
 
 def main():
+    # Set page configuration
+    st.set_page_config(
+        page_title="Painter - Visual Analogy Generator",
+        page_icon="🎨",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    # Set theme to light
+    st.markdown("""
+        <style>
+            .stApp {
+                background-color: #ffffff;
+            }
+            .stSidebar {
+                background-color: #f0f2f6;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
     st.title("Painter 🎨")
 
     # Add controls to sidebar
@@ -444,6 +464,7 @@ def main():
                         annotate_chunk_with_analogies,
                         max_chunk_idx=max_chunks
                     ))
+                    st.info("Text annotation finished!")
                     print("Annotation done")
                     st.session_state["doc"] = asyncio.run(generate_all_images(
                         st.session_state["doc"],
