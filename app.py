@@ -424,9 +424,9 @@ def main():
                         if not file_path.endswith(".md"):
                             with open(f"./files/{title}.md", "w") as f:
                                 f.write(file)
-                            st.session_state["doc"] = chunk_markdown(f"./files/{title}.md", chunk_size=3000)
+                            st.session_state["doc"] = chunk_markdown(f"./files/{title}.md", chunk_size=6000)
                         else:
-                            st.session_state["doc"] = chunk_markdown(file_path, chunk_size=3000)
+                            st.session_state["doc"] = chunk_markdown(file_path, chunk_size=6000)
                             
                 except Exception as e:
                     st.info(f"Error while importing {file_path}: {e}")
