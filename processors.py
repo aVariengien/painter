@@ -40,7 +40,7 @@ class AnnotatedDocument:
 
 
 
-def chunk_markdown(markdown_path: str, chunk_size: int = 1000, max_char: int = 20000, start_idx: int = 0) -> AnnotatedDocument:
+def chunk_markdown(markdown_path: str, chunk_size: int = 1000) -> AnnotatedDocument:
     # Read markdown content
     doc = create_document(Path(markdown_path).read_text())
     
@@ -51,7 +51,7 @@ def chunk_markdown(markdown_path: str, chunk_size: int = 1000, max_char: int = 2
         length_function=len,
         is_separator_regex=False,
     )
-    chunks = text_splitter.split_text(doc.text_only[start_idx:start_idx+max_char])
+    chunks = text_splitter.split_text(doc.text_only)
     
     # Convert chunks into ChunkAnnotation objects
     chunk_annotations = []

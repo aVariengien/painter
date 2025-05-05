@@ -1,14 +1,9 @@
 
 # %%
-from docling.document_converter import DocumentConverter
+
 import logging
 import time
 from pathlib import Path
-
-from docling_core.types.doc import ImageRefMode, PictureItem, TableItem
-from docling.datamodel.base_models import FigureElement, InputFormat, Table
-from docling.datamodel.pipeline_options import PdfPipelineOptions, PipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption, HTMLFormatOption
 
 from readability import Document  # type: ignore
 from urllib.parse import urlparse
@@ -82,6 +77,37 @@ def create_document(markdown_content: str) -> IllustratedDocument:
         image_map=image_map
     )
 
+def safe_filename(title):
+    # Define characters to replace
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+
+    # Replace invalid characters with underscores
+    for char in invalid_chars:
+        title = title.replace(char, '_')
+
+    # Replace spaces with underscores (optional)
+    title = title.replace(' ', '_')
+    return title
+
+
+def is_valid_path_or_url(string):
+    if not string or not isinstance(string, str):
+        return False
+
+    # Check if it's a URL
+    parsed = urlparse(string)
+    if parsed.scheme and parsed.netloc:
+        return True
+
+    # Check if it's a valid file path
+    if os.path.exists(string):
+        return True
+
+    # Check if it's a potentially valid relative path
+    if re.match(r'^\.\/[a-zA-Z0-9_\-./\\]+$', string):
+        return True
+
+    return False
 
 def timeout_decorator(timeout_duration):
     def decorator(func):
@@ -97,62 +123,6 @@ def timeout_decorator(timeout_duration):
         return wrapper
     return decorator
 
-def import_pdf_with_simpletex(pdf_path: str, uat_token: str):
-    """
-    Import PDF using SimpleTex OCR API.
-    
-    Args:
-        pdf_path (str): Path to the PDF file
-        uat_token (str): SimpleTex API authentication token
-    
-    Returns:
-        tuple: (markdown_content, document_name)
-    """
-    def pillow_image_to_file_binary(image):
-        bytes_io = io.BytesIO()
-        image.save(bytes_io, format='PNG')
-        return bytes_io.getvalue()
-
-    def convert_pdf_to_images(pdf_binary, dpi=100):
-        doc = fitz.open("pdf", pdf_binary)
-        images = []
-        for i in range(doc.page_count):
-            page = doc[i]
-            image = page.get_pixmap(dpi=dpi)
-            image = Image.frombytes("RGB", [image.width, image.height], image.samples)
-            images.append(image)
-        return images
-
-    def pdf_ocr(image):
-        api_url = "https://server.simpletex.cn/api/doc_ocr/"
-        header = {"token": uat_token}
-        img_file = {"file": pillow_image_to_file_binary(image)}
-        res = requests.post(api_url, files=img_file, data={}, headers=header).json()
-        return res["res"]["content"]
-
-    try:
-        # Read PDF file
-        file_binary = open(pdf_path, 'rb').read()
-        images = convert_pdf_to_images(file_binary)
-        
-        # Process each page
-        final_markdown_content = ""
-        for image in tqdm(images, desc="Processing pages with SimpleTex OCR"):
-            markdown_page = pdf_ocr(image)
-            final_markdown_content += markdown_page + "\n\n---\n\n"
-        
-        # Get document name from path
-        doc_name = Path(pdf_path).stem
-        
-        return final_markdown_content, doc_name
-    
-    except Exception as e:
-        logging.error(f"Error in SimpleTex OCR processing: {str(e)}")
-        raise
-
-
-def try_local_pdf_import(path: str):
-    return import_pdf(path)
 
 def download_pdf(url: str, cache_folder: str = "downloads/pdf") -> str:
     """
@@ -197,6 +167,13 @@ def get_image_base64(image_url: str, base_url: str = None) -> str:
     """Download image and convert it to base64."""
     try:
         # Handle protocol-relative URLs (starting with //)
+        
+        # if the image url is a local file, return the base64 of the file
+        if os.path.exists("./"+image_url):
+            with open("./"+image_url, "rb") as f:
+                image_base64 = base64.b64encode(f.read()).decode('utf-8')
+            return f"data:image/jpg;base64,{image_base64}"
+
         if image_url.startswith('//'):
             image_url = 'https:' + image_url
 
@@ -207,7 +184,8 @@ def get_image_base64(image_url: str, base_url: str = None) -> str:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36"
         }
-        response = requests.get(image_url, headers=headers)
+        # get with a timeout of 10 seconds
+        response = requests.get(image_url, headers=headers, timeout=5)
         if response.status_code == 200:
             # Determine the image type
             content_type = response.headers.get('content-type')
@@ -313,57 +291,6 @@ def remove_script_tags(html_content):
     return str(soup)
 
 
-def import_pdf(path: str):
-    pdf_path = Path(path)
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.images_scale = 2.0
-    pipeline_options.generate_page_images = True
-    pipeline_options.generate_picture_images = True
-    pipeline_options.generate_table_images = True
-
-    doc_converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
-        }
-    )
-    # Get total number of pages
-    pdf = PdfReader(pdf_path)
-    total_pages = len(pdf.pages)
-
-    # Create temporary directory for single pages
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_dir_path = Path(temp_dir)
-        
-        # Initialize empty markdown string
-        full_markdown = ""
-        
-        # Process each page with progress bar
-        for page_num in tqdm(range(total_pages), desc="Converting PDF pages"):
-            # Create single-page PDF
-            writer = PdfWriter()
-            writer.add_page(pdf.pages[page_num])
-            temp_pdf_path = temp_dir_path / f"page_{page_num + 1}.pdf"
-            
-            with open(temp_pdf_path, "wb") as temp_pdf:
-                writer.write(temp_pdf)
-            
-            # Convert single page to markdown
-
-            conv_res = doc_converter.convert(temp_pdf_path)
-            page_markdown = conv_res.document.export_to_markdown(
-                delim="\n", 
-                image_mode=ImageRefMode.EMBEDDED
-            )
-            
-            # Append to full markdown with page separator
-            if page_markdown.strip():  # Only add non-empty pages
-                if full_markdown:
-                    full_markdown += "\n\n---\n\n"  # Page separator
-                full_markdown += page_markdown
-
-    return full_markdown, pdf_path.stem
-
-
 def fix_markdown_links(markdown_content: str) -> str:
     """
     Fix markdown links by removing unwanted spaces.
@@ -402,7 +329,7 @@ def import_html(html_content: str, url: str = None):
         ],
     )
     content = fix_markdown_links(content)
-    content.replace("$", "\$")
+    content = content.replace("$", "\\$")
     return content, title
 
 def convert_epub_to_html(epub_file: str) -> str:
@@ -419,7 +346,7 @@ def convert_epub_to_html(epub_file: str) -> str:
     html_file = f"{base_name}.html"
 
     try:
-        subprocess.run(['pandoc', '-f', 'epub', '-t', 'html', '-o', html_file, epub_file], check=True)
+        subprocess.run(['pandoc', "--extract-media", "./source/images",'-f', 'epub', '-t', 'html', '-o', html_file, epub_file], check=True)
     except subprocess.CalledProcessError as e:
         logging.error(f"Error converting EPUB to HTML: {e}")
         raise
@@ -442,15 +369,12 @@ def import_file(file_name: str, simpletex_uat: str = "mC1CUanhaUOBBlVROBgOtVzUEj
     
     if file_name.endswith(".pdf"):
         # Try local PDF import first
-        result = try_local_pdf_import(file_name)
-        
-        # If local import times out or fails and SimpleTex token is provided, use SimpleTex
-        if result is None and simpletex_uat:
-            logging.info("Local PDF import timed out, falling back to SimpleTex OCR")
-            return import_pdf_with_simpletex(file_name, simpletex_uat)
-        elif result is None:
-            raise TimeoutError("PDF import timed out and no SimpleTex token provided")
+        raise ValueError("PDF not supported yet.")
 
+    if file_name.endswith(".md"):
+        with open(file_name, "r") as f:
+            content = f.read()
+        return content, os.path.basename(file_name)
     
     # Handle other file types as before
     if file_name.startswith("http://") or file_name.startswith("https://"):
