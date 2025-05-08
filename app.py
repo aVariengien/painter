@@ -211,10 +211,10 @@ def compose_image(generated_image_base64: str, text_before: str, text: str, text
     draw = ImageDraw.Draw(composed_image)
     
     # Load fonts
-    try:
-        font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 20)
-    except IOError:
-        font = ImageFont.load_default(size=20)
+    #try:
+    #    font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 20)
+    #except IOError:
+    font = ImageFont.load_default(size=20)
     
     def wrap_text(text: str, max_width: int, font: ImageFont.FreeTypeFont) -> list[str]:
         """Helper function to wrap text to fit within max_width."""
@@ -434,6 +434,7 @@ def main():
     with st.sidebar:
         file_path = st.sidebar.text_area("Enter an URLs (or local file paths) (one per line)")
         import_files = st.sidebar.button("⏩️ Import files")
+        chunk_size = st.sidebar.slider("Chunk size", help="Smaller chunks size means higher image density.", min_value=2000, max_value=10000, value=6000)
         if import_files:
             if is_valid_path_or_url(file_path):
                 try:
@@ -444,9 +445,9 @@ def main():
                         if not file_path.endswith(".md"):
                             with open(f"./files/{title}.md", "w") as f:
                                 f.write(file)
-                            st.session_state["doc"] = chunk_markdown(f"./files/{title}.md", chunk_size=6000)
+                            st.session_state["doc"] = chunk_markdown(f"./files/{title}.md", chunk_size=chunk_size)
                         else:
-                            st.session_state["doc"] = chunk_markdown(file_path, chunk_size=6000)
+                            st.session_state["doc"] = chunk_markdown(file_path, chunk_size=chunk_size)
                             
                 except Exception as e:
                     st.info(f"Error while importing {file_path}: {e}")
