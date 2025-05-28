@@ -31,6 +31,7 @@ class AnnotatedDocument:
     display_markdown: str
     image_map: Dict[str, str]
     annotated_chunks: List[AnnotatedChunk]
+    title: str = ""
     def get_display_ready(self, text: str) -> str:
         """Replace image placeholders with actual image content."""
         result = text

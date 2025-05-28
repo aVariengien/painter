@@ -2,9 +2,9 @@ import streamlit as st
 from processors import chunk_markdown
 from concurrent.futures import ThreadPoolExecutor
 import json
-from processors import Annotation, AnnotatedChunk
+from processors import Annotation, AnnotatedChunk, AnnotatedDocument
 import anthropic
-from typing import List, Callable
+from typing import List, Callable, Dict
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 import random
@@ -19,8 +19,29 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import time
 from file_import import is_valid_path_or_url, import_file, safe_filename
-from prompts import QUOTE_EXTRACT_PROMPT
+from prompts import QUOTE_EXTRACT_PROMPT, MAXI_PROMPT, TextStructure
 import re
+from datetime import datetime
+import pathlib
+from litellm import completion, acompletion
+import markdown
+
+
+LONG_CONTEXT_MODEL_NAME = "gemini/gemini-2.5-flash-preview-05-20" # gemini/gemini-2.5-flash-preview-05-20
+
+
+def create_text_structure(text: str):
+    prompt = MAXI_PROMPT.format(TEXT = text)
+    result = completion(
+        model=LONG_CONTEXT_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        response_format=TextStructure,
+        reasoning_effort="medium",
+    )
+
+    result_json = result.choices[0].message.content
+    text_structure = TextStructure.model_validate_json(result_json)
+    return text_structure
 
 def force_text_quote(text: str, chunk_text: str, threshold: float = 0.8) -> str:
     """
@@ -162,7 +183,7 @@ async def annotate_chunk_with_analogies(chunk: AnnotatedChunk, index: int = -1) 
             if space_counter % 5 == 0:
                 tagged_chunk_text += f'<tag id="{tag_counter}"/>'
                 tag_counter += 1
-        if char in ".,:;!?":
+        if char in ".,:;!?)(\n":
             tagged_chunk_text += f'<tag id="{tag_counter}"/>'
             tag_counter += 1
 
@@ -218,15 +239,15 @@ async def process_chunks_in_parallel(chunks: List[AnnotatedChunk], f: Callable[[
                 chunk.annotations = processed_chunks[i].annotations
     return chunks
 
-def highlight_text(text: str, annotations: List[Annotation]) -> str:
-    """Highlight annotated text in the chunk."""
-    result = text
-    for annotation in annotations:
-        # random color
-        color = '#{:06x}'.format(random.randint(0, 0xFFFFFF))
-        highlighted = f"""<span style="background-color: {color}">{annotation.text}</span>"""
-        result = result.replace(annotation.text, highlighted)
-    return result
+# def highlight_text(text: str, annotations: List[Annotation]) -> str:
+#     """Highlight annotated text in the chunk."""
+#     result = text
+#     for annotation in annotations:
+#         # random color
+#         color = '#{:06x}'.format(random.randint(0, 0xFFFFFF))
+#         highlighted = f"""<span style="background-color: {color}">{markdown.markdown(annotation.text).replace("<p>", "").replace("</p>", "")}</span>"""
+#         result = result.replace(annotation.text, highlighted)
+#     return result
 
 async def generate_analogy_image(visual_description: str, index: int = -1) -> str:
     """
@@ -247,7 +268,7 @@ async def generate_analogy_image(visual_description: str, index: int = -1) -> st
         numberResults=1,
         negativePrompt="blurry, low quality, distorted",
         height=512,
-        width=768,
+        width=512,
     )
     
     images = await runware.imageInference(requestImage=request_image)
@@ -290,12 +311,15 @@ def compose_image(generated_image_base64: str, text_before: str, text: str, text
     
     # Create a drawing context
     draw = ImageDraw.Draw(composed_image)
+
+
+    text = "[...] " + text + " [...]"
     
     # Load fonts
-    #try:
-    #    font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 20)
-    #except IOError:
-    font = ImageFont.load_default(size=20)
+    try:
+        font = ImageFont.truetype("./fonts/Montserrat-MediumItalic.ttf", 20)
+    except:
+        font = ImageFont.load_default(size=20)
     
     def wrap_text(text: str, max_width: int, font: ImageFont.FreeTypeFont) -> list[str]:
         """Helper function to wrap text to fit within max_width."""
@@ -323,7 +347,7 @@ def compose_image(generated_image_base64: str, text_before: str, text: str, text
     y = gen_image.height + 20
     
     # Draw description in black
-    desc_lines = wrap_text(associated_text, max_width, font)
+    desc_lines = wrap_text(text, max_width, font)
     for line in desc_lines:
         draw.text((20, y), line, font=font, fill='black')
         y += 20
@@ -410,7 +434,7 @@ def get_sentence_before_and_after(text: str, chunk_text: str) -> tuple[str, str]
 
 html_img_container = """
 <div style="float: right;">
-    <img src="data:image/png;base64,{img_b64}" style="max-height: 420px; width: auto; max-width: 100%";/>
+    <img src="data:image/png;base64,{img_b64}" style="max-height: 300px; width: auto; max-width: 100%";/>
 </div>
 """
 
@@ -467,12 +491,12 @@ async def generate_all_images(doc, max_chunk_idx: int = None):
                 if f"""<span style="background-color: #FFFF00">{annotation.text}</span>""" not in display_markdown:
                     chunk.chunk_text = chunk.chunk_text.replace(
                         annotation.text,
-                        f"{image_placeholder}{f"""<span style="background-color: #FFFF00">{annotation.text}</span>"""}",
+                        f"{image_placeholder}{f"""<span style="background-color: #FFFF00">{markdown.markdown(annotation.text).replace("<p>", "").replace("</p>", "")}</span>"""}",
                         1
                     )
                     display_markdown = display_markdown.replace(
                         annotation.text,
-                        f"\n\n{image_placeholder}\n\n{f"""<span style="background-color: #FFFF00">{annotation.text}</span>"""}",
+                        f"{image_placeholder}{f"""<span style="background-color: #FFFF00">{markdown.markdown(annotation.text).replace("<p>", "").replace("</p>", "")}</span>"""}",
                         1
                     )
 
@@ -488,6 +512,7 @@ if "doc" not in st.session_state:
     st.session_state["doc"] = None
     st.session_state["quote_not_found"] = 0
     st.session_state["quote_found"] = 0
+    st.session_state["text_structure"] = None
 
 
 def jina_import(url: str):
@@ -519,8 +544,148 @@ def jina_import(url: str):
     else:
         title = url.split('/')[-1]  # Use last part of URL as fallback
     
+    content = "# " + title + "\n" + content[len(first_line):]
+
     return content, title
 
+def save_document(doc: AnnotatedDocument, title: str):
+    """Save an annotated document to a JSON file."""
+    # Create saves directory if it doesn't exist
+    saves_dir = pathlib.Path("saves")
+    saves_dir.mkdir(exist_ok=True)
+    
+    # Convert document to dictionary
+    doc_dict = {
+        "raw_content": doc.raw_content,
+        "text_only": doc.text_only,
+        "display_markdown": doc.display_markdown,
+        "image_map": doc.image_map,
+        "title": doc.title,
+        "annotated_chunks": [
+            {
+                "chunk_text": chunk.chunk_text,
+                "annotations": [
+                    {
+                        "text": ann.text,
+                        "type": ann.type,
+                        "associated_text": ann.associated_text,
+                        "image": ann.image,
+                        "extras": ann.extras
+                    } for ann in chunk.annotations
+                ]
+            } for chunk in doc.annotated_chunks
+        ]
+    }
+    
+    # Add text structure if available
+    if st.session_state["text_structure"] is not None:
+        doc_dict["text_structure"] = st.session_state["text_structure"].model_dump()
+    
+    # Save to file
+    file_path = saves_dir / f"{safe_filename(title)}.json"
+    with open(file_path, "w") as f:
+        json.dump(doc_dict, f)
+    
+    # Update metadata
+    update_document_metadata(title, str(file_path), st.session_state["text_structure"] is not None)
+
+def load_document(file_path: str) -> AnnotatedDocument:
+    """Load an annotated document from a JSON file."""
+    with open(file_path, "r") as f:
+        doc_dict = json.load(f)
+    
+    # Convert dictionary back to AnnotatedDocument
+    annotated_chunks = []
+    for chunk_dict in doc_dict["annotated_chunks"]:
+        annotations = []
+        for ann_dict in chunk_dict["annotations"]:
+            annotation = Annotation(
+                text=ann_dict["text"],
+                type=ann_dict["type"],
+                associated_text=ann_dict["associated_text"],
+                image=ann_dict["image"],
+                extras=ann_dict["extras"]
+            )
+            annotations.append(annotation)
+        
+        chunk = AnnotatedChunk(
+            chunk_text=chunk_dict["chunk_text"],
+            annotations=annotations
+        )
+        annotated_chunks.append(chunk)
+    
+    doc = AnnotatedDocument(
+        raw_content=doc_dict["raw_content"],
+        text_only=doc_dict["text_only"],
+        display_markdown=doc_dict["display_markdown"],
+        image_map=doc_dict["image_map"],
+        annotated_chunks=annotated_chunks,
+        title=doc_dict.get("title", "")
+    )
+    
+    # Reset text structure state
+    st.session_state["text_structure"] = None
+    
+    # Restore text structure if available in the saved document
+    if "text_structure" in doc_dict:
+        st.session_state["text_structure"] = TextStructure.model_validate(doc_dict["text_structure"])
+    
+    return doc
+
+def update_document_metadata(title: str, file_path: str, has_structure: bool = False):
+    """Update the metadata file with document information."""
+    metadata_file = pathlib.Path("saves/metadata.json")
+    
+    # Load existing metadata or create new
+    if metadata_file.exists():
+        with open(metadata_file, "r") as f:
+            metadata = json.load(f)
+    else:
+        metadata = {}
+    
+    # Update metadata
+    metadata[title] = {
+        "file_path": str(file_path),
+        "last_accessed": datetime.now().isoformat(),
+        "has_structure": has_structure
+    }
+    
+    # Save metadata
+    with open(metadata_file, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+def get_saved_documents() -> Dict[str, Dict]:
+    """Get list of saved documents with their metadata."""
+    metadata_file = pathlib.Path("saves/metadata.json")
+    if metadata_file.exists():
+        with open(metadata_file, "r") as f:
+            return json.load(f)
+    return {}
+
+def delete_document(title: str):
+    """Delete a saved document and its metadata."""
+    metadata_file = pathlib.Path("saves/metadata.json")
+    if not metadata_file.exists():
+        return
+    
+    # Load metadata
+    with open(metadata_file, "r") as f:
+        metadata = json.load(f)
+    
+    if title not in metadata:
+        return
+    
+    # Delete document file
+    file_path = pathlib.Path(metadata[title]["file_path"])
+    if file_path.exists():
+        file_path.unlink()
+    
+    # Remove from metadata
+    del metadata[title]
+    
+    # Save updated metadata
+    with open(metadata_file, "w") as f:
+        json.dump(metadata, f, indent=2)
 
 def main():
     # Set page configuration
@@ -531,7 +696,6 @@ def main():
         initial_sidebar_state="expanded",
     )
 
-
     # Set theme to light
     st.markdown("""
         <style>
@@ -541,42 +705,66 @@ def main():
             .stSidebar {
                 background-color: #f0f2f6;
             }
+            .delete-btn {
+                color: #ff4b4b;
+                font-size: 0.8em;
+                padding: 0 5px;
+            }
+            .book-structure {
+                background-color: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+            }
         </style>
     """, unsafe_allow_html=True)
 
-    st.title("Website Painter 🎨")
-
-
     # Add controls to sidebar
     with st.sidebar:
-
+        st.title("Website Painter 🎨")
         st.markdown("""Add images to your reading!
 1. Enter the url in the field
 2. Click 'import file'
-3. Choose the number of chunks to illustrate.""")
+3. Choose the number of chunks to illustrate.
+4. Generate images!""")
+        
+        st.markdown("---")
+        
         file_path = st.sidebar.text_area("Enter an URL (online only, PDFs are supported).")
         import_files = st.sidebar.button("⏩️ Import file")
-        chunk_size = st.sidebar.slider("Chunk size", help="Smaller chunks size means higher image density.", min_value=2000, max_value=10000, value=6000)
+        chunk_size = 4000
+        
         if import_files:
             if is_valid_path_or_url(file_path):
                 try:
                     # add a spinner
                     with st.spinner("Importing file..."):
                         file, title = jina_import(file_path) # old version file_import
-                        title = safe_filename(title)
                         if not file_path.endswith(".md"):
-                            with open(f"./files/{title}.md", "w") as f:
+                            with open(f"./files/{safe_filename(title)}.md", "w") as f:
                                 f.write(file)
-                            st.session_state["doc"] = chunk_markdown(f"./files/{title}.md", chunk_size=chunk_size)
+                            st.session_state["doc"] = chunk_markdown(f"./files/{safe_filename(title)}.md", chunk_size=chunk_size)
                         else:
                             st.session_state["doc"] = chunk_markdown(file_path, chunk_size=chunk_size)
-                            
+                        
+                        # Reset text structure when importing new document
+                        st.session_state["text_structure"] = None
+                    st.session_state["doc"].title = title
+                    save_document(st.session_state["doc"], st.session_state["doc"].title)
                 except Exception as e:
                     st.info(f"Error while importing {file_path}: {e}")
             else:
                 st.info(f"Invalid filename {file_path}")
-
+            
         if st.session_state["doc"] is not None:
+            # Add book structure generation button
+            if st.button("📚 Generate Text Structure"):
+                with st.spinner("Analyzing document structure (~ 30 sec)..."):
+                    text_structure = create_text_structure(st.session_state["doc"].text_only)
+                    st.session_state["text_structure"] = text_structure
+            # Update metadata to save the structure
+                save_document(st.session_state["doc"], st.session_state["doc"].title)
+            
             max_chunks = st.slider("Number of chunks to process", min_value=1, max_value=len(st.session_state["doc"].annotated_chunks), value=1)
             
             if st.button("Generate AI Images"):
@@ -590,18 +778,76 @@ def main():
                         max_chunk_idx=max_chunks
                     ))
                     st.info("Text annotation finished!")
-                    st.info(f"{st.session_state["quote_not_found"]} quotes not found, {st.session_state["quote_found"]} found.")
                     print("Annotation done")
                     st.session_state["doc"] = asyncio.run(generate_all_images(
                         st.session_state["doc"],
                         max_chunk_idx=max_chunks
                     ))
                     st.success("Images generated successfully!")
+                    
+                    # Save document after generating images
+                    save_document(st.session_state["doc"], st.session_state["doc"].title)
+
+        # Show saved documents
+        st.markdown("---")
+        saved_docs = get_saved_documents()
+        if saved_docs:
+            st.markdown("### Saved Documents")
+            for title, metadata in list(saved_docs.items())[::-1]:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    last_accessed = datetime.fromisoformat(metadata["last_accessed"]).strftime("%Y-%m-%d %H:%M")
+                    structure_icon = "📚 " if metadata.get("has_structure", False) else ""
+                    if st.button(f"{structure_icon}📄 {title} ({last_accessed})", key=f"load_{title}"):
+                        doc = load_document(metadata["file_path"])
+                        st.session_state["doc"] = doc
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️", key=f"delete_{title}", help="Delete this document"):
+                        delete_document(title)
+                        st.rerun()
 
     # Display the document with or without images
     if st.session_state["doc"] is not None:
+        # Display book structure if available
+        
+        if st.session_state["text_structure"] is not None:
+            with st.expander("📚 Text Structure", expanded=True):
+                st.markdown(f"# {st.session_state["doc"].title}")
+                
+                # Display each section
+                for i, section in enumerate(st.session_state["text_structure"].sections, 1):
+                    # Section header with color and colored side border
+                    st.markdown(f"""
+                        <div style='border-left: 5px solid {section.section_color.html_color}; padding-left: 10px; margin: 10px 0;'>
+                            <h2>{i}. {section.section_name}</h4>
+                            {markdown.markdown(re.sub(r'\*([^*]+)\*', r'**\1**', section.section_introduction))}
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Chapters
+                    if section.chapters:
+                        st.markdown("#### Chapters:")
+                        for j, chapter in enumerate(section.chapters, 1):
+                            st.markdown(f"##### {i}.{j} {chapter.chapter_name}")
+                            st.markdown(f"*{chapter.chapter_comment}*")
+                            if chapter.key_quotes:
+                                st.markdown("**Key quotes:**")
+                                for quote in chapter.key_quotes:
+                                    st.markdown(f"- '_{quote}_'")
+
+                    
+                    st.markdown("---")
+
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Display document content
         md_str = st.session_state["doc"].get_display_ready(st.session_state["doc"].display_markdown)
         st.markdown(md_str, unsafe_allow_html=True)
+
+    if st.session_state["doc"] is None:
+        st.markdown("Enter an url, or load a saved document to start!")
 
 if __name__ == "__main__":
     main()
