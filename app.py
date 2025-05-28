@@ -5,7 +5,7 @@ import json
 from processors import Annotation, AnnotatedChunk
 import anthropic
 from typing import List, Callable
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 import random
 from difflib import SequenceMatcher
@@ -19,6 +19,8 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import time
 from file_import import is_valid_path_or_url, import_file, safe_filename
+from prompts import QUOTE_EXTRACT_PROMPT
+import re
 
 def force_text_quote(text: str, chunk_text: str, threshold: float = 0.8) -> str:
     """
@@ -74,26 +76,103 @@ def force_text_quote(text: str, chunk_text: str, threshold: float = 0.8) -> str:
         return best_match
     return text
 
+def force_text_quote_tag(text: str, tagged_chunk_text: str, start_tag: int, end_tag: int) -> str:
+    """Find the exact quote in the tagged text by looking at the tags.
+    
+    Args:
+        text: The text to find, containing tags like <tag id="12">text<tag id="14">
+        tagged_chunk_text: The full text with tags to search in
+        
+    Returns:
+        The exact quote from tagged_chunk_text between the matching tags
+    """
+    # Find all tag numbers in the input text
+    # tag_numbers = re.findall(r'<tag id="(\d+)"/>', text)
+    # if not tag_numbers:
+    #     print("No tag!!!")
+    #     return text
+
+
+        
+    # # Get start and end tag numbers
+    # tag_start = max(int(tag_numbers[0])-1, 0)
+    # tag_end = int(tag_numbers[-1])
+    
+    # Find positions of these tags in tagged_chunk_text
+    if start_tag > 0:
+        start_tag -=1
+
+    tag_start = f'<tag id="{start_tag}"/>'
+    tag_end = f'<tag id="{end_tag}"/>'
+    
+    start_pos = tagged_chunk_text.find(tag_start)
+    end_pos = tagged_chunk_text.find(tag_end)
+    
+    if start_pos == -1 or end_pos == -1:
+        print("Tag not found!!!")
+        print(f"{start_pos} {end_pos}")
+        return text
+        
+    # Extract text between tags
+    quote = tagged_chunk_text[start_pos + len(tag_start):end_pos]
+    print(f"{tag_start} - {tag_end}")
+    print("====")
+    print("TEXT")
+    print(text)
+
+
+    print("QUOTE")
+    print(quote)
+    
+    # Remove any remaining tags from the quote
+    quote = re.sub(r'<tag id="\d+"/>', '', quote)
+    
+    quote.strip()
+    print("CLEAN QUOTE")
+    print(quote)
+    print("======")
+
+    if quote and quote[0] == '\n':
+        quote = quote[1:]
+    return quote
+
 
 client = AsyncOpenAI()
 
 async def annotate_chunk_with_analogies(chunk: AnnotatedChunk, index: int = -1) -> AnnotatedChunk:
     """Process a single chunk with Claude to extract annotations."""
     start_time = time.time()
-
     class AnalogyList(BaseModel):
         class Analogy(BaseModel):
-            excerpt: str
-            visual_description: str
-        analogies: list[Analogy]
+            excerpt: str = Field(..., description="A short key quote (1-2 sentences) copied VERBATIM from the text, keep the <tag id='XX'/> from the text.")
+            excerpt_tag_start: int = Field(..., description="""The id of the tag before the start of the excerpt. The excerpt should start _after_ this tag. For instance, if the tag is <tag id="42"/> this field is 42.""")
+            excerpt_tag_end: int = Field(..., description="""The id of the tag at the end of the excerpt. For instance, if the tag is <tag id="42"/> this field is 42.""")
+            visual_description: str = Field(..., description="A concise description of a photography that illustrates the excerpt, optionally including an art style")
+        analogies: list[Analogy] = Field(..., description="List of 1-3 key passages with their corresponding visual descriptions")
+
+    # Create tagged version of chunk text with incrementing tags every 5 spaces
+    tagged_chunk_text = ""
+    tag_counter = 0
+    space_counter = 0
+    
+    for char in chunk.chunk_text:
+        tagged_chunk_text += char
+        if char == " ":
+            space_counter += 1
+            if space_counter % 5 == 0:
+                tagged_chunk_text += f'<tag id="{tag_counter}"/>'
+                tag_counter += 1
+        if char in ".,:;!?":
+            tagged_chunk_text += f'<tag id="{tag_counter}"/>'
+            tag_counter += 1
 
     response = await client.responses.parse(
         model="gpt-4.1-mini-2025-04-14",
         input=[
-            {"role": "system", "content": "Extract passages (0-3) from the text that contain an analogy or a metaphor that can be visually represented. Repeat exactly the text from the input. Associate a precise visual representation to the passage."},
+            {"role": "system", "content": QUOTE_EXTRACT_PROMPT},
             {
                 "role": "user",
-                "content": chunk.chunk_text,
+                "content": tagged_chunk_text,
             },
         ],
         text_format=AnalogyList
@@ -101,7 +180,7 @@ async def annotate_chunk_with_analogies(chunk: AnnotatedChunk, index: int = -1) 
     annotations = []
     if response.output_parsed and response.output_parsed.analogies:
         for analogy in response.output_parsed.analogies:
-            analogy.excerpt = force_text_quote(analogy.excerpt, chunk.chunk_text)
+            analogy.excerpt = force_text_quote_tag(analogy.excerpt, tagged_chunk_text, analogy.excerpt_tag_start, analogy.excerpt_tag_end)
             if analogy.excerpt in chunk.chunk_text:
                 annotation = Annotation(
                     text=analogy.excerpt,
@@ -109,8 +188,10 @@ async def annotate_chunk_with_analogies(chunk: AnnotatedChunk, index: int = -1) 
                     associated_text=analogy.visual_description
                 )
                 annotations.append(annotation)
+                st.session_state["quote_found"] +=1
             else:
                 print(f"Excerpt not found in chunk: {analogy.excerpt}")
+                st.session_state["quote_not_found"] += 1
 
     chunk.annotations = annotations
     print(f"Annotated chunk {index} in {time.time() - start_time:.2f} seconds. Output tokens: {response.usage.input_tokens}, Input tokens: {response.usage.output_tokens}")
@@ -162,11 +243,11 @@ async def generate_analogy_image(visual_description: str, index: int = -1) -> st
     
     request_image = IImageInference(
         positivePrompt=visual_description,
-        model="runware:100@1",
+        model="runware:101@1",
         numberResults=1,
         negativePrompt="blurry, low quality, distorted",
         height=512,
-        width=512,
+        width=768,
     )
     
     images = await runware.imageInference(requestImage=request_image)
@@ -329,7 +410,7 @@ def get_sentence_before_and_after(text: str, chunk_text: str) -> tuple[str, str]
 
 html_img_container = """
 <div style="float: right;">
-    <img src="data:image/png;base64,{img_b64}" style="max-height: 350px; width: auto; max-width: 100%";/>
+    <img src="data:image/png;base64,{img_b64}" style="max-height: 420px; width: auto; max-width: 100%";/>
 </div>
 """
 
@@ -386,7 +467,7 @@ async def generate_all_images(doc, max_chunk_idx: int = None):
                 if f"""<span style="background-color: #FFFF00">{annotation.text}</span>""" not in display_markdown:
                     chunk.chunk_text = chunk.chunk_text.replace(
                         annotation.text,
-                        f"\n\n{image_placeholder}\n\n{f"""<span style="background-color: #FFFF00">{annotation.text}</span>"""}",
+                        f"{image_placeholder}{f"""<span style="background-color: #FFFF00">{annotation.text}</span>"""}",
                         1
                     )
                     display_markdown = display_markdown.replace(
@@ -394,17 +475,51 @@ async def generate_all_images(doc, max_chunk_idx: int = None):
                         f"\n\n{image_placeholder}\n\n{f"""<span style="background-color: #FFFF00">{annotation.text}</span>"""}",
                         1
                     )
+
+                    print("ANOTATION TEXT", annotation.text)
     
     doc.display_markdown = display_markdown
     doc.image_map.update(image_map)
     return doc
 
 
-
-
 # check if the document is already loaded by checking the session state
 if "doc" not in st.session_state:
     st.session_state["doc"] = None
+    st.session_state["quote_not_found"] = 0
+    st.session_state["quote_found"] = 0
+
+
+def jina_import(url: str):
+    """Import content from a Jina URL.
+    
+    Args:
+        url (str): The URL to import from
+        
+    Returns:
+        tuple: (content, title)
+    """
+    import requests
+    
+    # Append Jina prefix if not already present
+    if not url.startswith("https://r.jina.ai/"):
+        url = f"https://r.jina.ai/{url}"
+    
+    # Get the content
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise ValueError(f"Failed to fetch content from {url}")
+    
+    content = response.text
+    
+    # Extract title from first line
+    first_line = content.split('\n')[0]
+    if first_line.startswith("Title: "):
+        title = first_line[7:]  # Remove "Title: " prefix
+    else:
+        title = url.split('/')[-1]  # Use last part of URL as fallback
+    
+    return content, title
 
 
 def main():
@@ -415,6 +530,7 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
 
     # Set theme to light
     st.markdown("""
@@ -430,17 +546,23 @@ def main():
 
     st.title("Website Painter 🎨")
 
+
     # Add controls to sidebar
     with st.sidebar:
-        file_path = st.sidebar.text_area("Enter an URLs (or local file paths) (one per line)")
-        import_files = st.sidebar.button("⏩️ Import files")
+
+        st.markdown("""Add images to your reading!
+1. Enter the url in the field
+2. Click 'import file'
+3. Choose the number of chunks to illustrate.""")
+        file_path = st.sidebar.text_area("Enter an URL (online only, PDFs are supported).")
+        import_files = st.sidebar.button("⏩️ Import file")
         chunk_size = st.sidebar.slider("Chunk size", help="Smaller chunks size means higher image density.", min_value=2000, max_value=10000, value=6000)
         if import_files:
             if is_valid_path_or_url(file_path):
                 try:
                     # add a spinner
                     with st.spinner("Importing file..."):
-                        file, title = import_file(file_path)
+                        file, title = jina_import(file_path) # old version file_import
                         title = safe_filename(title)
                         if not file_path.endswith(".md"):
                             with open(f"./files/{title}.md", "w") as f:
@@ -459,6 +581,8 @@ def main():
             
             if st.button("Generate AI Images"):
                 with st.spinner("Generating images..."):
+                    st.session_state["quote_not_found"] = 0
+                    st.session_state["quote_found"]= 0
                     # Process chunks and generate images up to max_chunks
                     st.session_state["doc"].annotated_chunks = asyncio.run(process_chunks_in_parallel(
                         st.session_state["doc"].annotated_chunks, 
@@ -466,6 +590,7 @@ def main():
                         max_chunk_idx=max_chunks
                     ))
                     st.info("Text annotation finished!")
+                    st.info(f"{st.session_state["quote_not_found"]} quotes not found, {st.session_state["quote_found"]} found.")
                     print("Annotation done")
                     st.session_state["doc"] = asyncio.run(generate_all_images(
                         st.session_state["doc"],
