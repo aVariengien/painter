@@ -433,7 +433,7 @@ def get_sentence_before_and_after(text: str, chunk_text: str) -> tuple[str, str]
 #"""
 
 html_img_container = """
-<div style="float: right;">
+<div style="float: {FLOAT_DIRECTION};">
     <img src="data:image/png;base64,{img_b64}" style="max-height: 300px; width: auto; max-width: 100%";/>
 </div>
 """
@@ -463,6 +463,7 @@ async def generate_all_images(doc, max_chunk_idx: int = None):
     # Update the document with generated images
     image_map = {}
     result_idx = 0
+    float_direction = 'left'
     for chunk in doc.annotated_chunks[:max_chunk_idx]:
         for annotation in chunk.annotations:
             if annotation.type == "analogy" and not annotation.image:
@@ -474,7 +475,11 @@ async def generate_all_images(doc, max_chunk_idx: int = None):
                     sentence_before, sentence_after = get_sentence_before_and_after(annotation.text, chunk.chunk_text)
 
                     composed_image_b64 = compose_image(image_base64, sentence_before, annotation.text, sentence_after, annotation.associated_text)
-                    image_map[placeholder] = html_img_container.format(img_b64=composed_image_b64)
+                    if float_direction == 'left':
+                        float_direction = 'right'
+                    else:
+                        float_direction = 'left'
+                    image_map[placeholder] = html_img_container.format(img_b64=composed_image_b64, FLOAT_DIRECTION=float_direction)
                     annotation.image = placeholder
                 result_idx += 1
     
